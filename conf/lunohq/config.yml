@@ -1,0 +1,218 @@
+mappings:
+  AmiMap:
+    us-east-1:
+      NAT: ${us_east_1_nat_ami}
+      empire: ${us_east_1_empire_ami}
+      ecs: ${us_east_1_ecs_ami}
+    us-west-1:
+      NAT: ${us_west_1_nat_ami}
+      empire: ${us_west_1_empire_ami}
+      ecs: ${us_west_1_ecs_ami}
+    us-west-2:
+      NAT: ${us_west_2_nat_ami}
+      empire: ${us_west_2_empire_ami}
+      ecs: ${us_west_2_ecs_ami}
+
+vpc_parameters: &vpc_parameters
+  VpcId: vpc::VpcId
+  DefaultSG: vpc::DefaultSG
+  PublicSubnets: vpc::PublicSubnets
+  PrivateSubnets: vpc::PrivateSubnets
+  AvailabilityZones: vpc::AvailabilityZones
+
+pre_build:
+  - path: stacker.hooks.keypair.ensure_keypair_exists
+    required: true
+    args:
+      keypair: ${ssh_key_name}
+  - path: stacker.hooks.iam.create_ecs_service_role
+    required: true
+  - path: stacker.hooks.iam.ensure_server_cert_exists
+    required: true
+    args:
+      cert_name: ${vault_elb_cert_name}
+  - path: stacker.hooks.iam.ensure_server_cert_exists
+    required: true
+    args:
+      cert_name: ${empire_controller_cert_name}
+  - path: stacker.hooks.route53.create_domain
+    required: true
+    args:
+      domain: ${base_domain}
+
+stacks:
+  - name: vpc
+    class_path: blueprints.vpc.VPC
+    parameters:
+      BaseDomain: ${base_domain}
+      InstanceType: ${vpc_instance_type}
+      SshKeyName: ${ssh_key_name}
+      ImageName: NAT
+      AZCount: 2
+      PublicSubnets: 10.128.0.0/24,10.128.1.0/24,10.128.2.0/24,10.128.3.0/24
+      PrivateSubnets: 10.128.8.0/22,10.128.12.0/22,10.128.16.0/22,10.128.20.0/22
+      InternalDomain: ${vpc_internal_domain}
+  - name: ecs
+    class_path: blueprints.ecs.DefaultEcs
+    parameters:
+      << : *vpc_parameters
+      InstanceType: ${default_ecs_instances_instance_type}
+      DesiredCapacity: ${default_ecs_instances_desired_instances}
+      MinSize: ${default_ecs_instances_min_instances}
+      MaxSize: ${default_ecs_instances_max_instances}
+      SshKeyName: ${ssh_key_name}
+      ImageName: ecs
+      ECSClusterName: default
+      DockerRegistry: ${docker_registry}
+      DockerRegistryUser: ${docker_registry_user}
+      DockerRegistryEmail: ${docker_registry_email}
+      DockerRegistryPassword: ${docker_registry_password}
+  - name: vault
+    class_path: blueprints.vault.VaultService
+    locked: true
+    enabled: ${vault_enabled}
+    parameters:
+      << : *vpc_parameters
+      BaseDomain: ${base_domain}
+      TrustedNetwork: ${vault_trusted_network}
+      ECSCluster: ecs::Cluster
+      ECSClusterIAMRole: ecs::IAMRole
+      ECSClusterSecurityGroup: ecs::SecurityGroup
+      ELBCertName: ${vault_elb_cert_name}
+  - name: empireRdsDb
+    class_path: stacker.blueprints.rds.postgres.MasterInstance
+    locked: true
+    parameters:
+      << : *vpc_parameters
+      Subnets: vpc::PrivateSubnets
+      InstanceType: ${empire_rds_instance_type}
+      AllocatedStorage: ${empire_rds_allocated_storage}
+      AllowMajorVersionUpgrade: 'false'
+      AllowMinorVersionUpgrade: 'true'
+      DatabaseName: ${empire_rds_db_name}
+      DBInstanceIdentifier: ${empire_rds_db_instance_name}
+      DBFamily: ${empire_rds_db_family}
+      EngineVersion: ${empire_rds_engine_version}
+      EngineMajorVersion: ${empire_rds_engine_major_version}
+      MasterUser: ${empire_rds_master_user}
+      MasterUserPassword: ${empire_rds_master_user_password}
+      StorageEncrypted: ${empire_rds_storage_encrypted}
+      MultiAZ: ${empire_rds_multi_az}
+  - name: apiRdsDbV2
+    class_path: stacker.blueprints.rds.postgres.MasterInstance
+    locked: true
+    parameters:
+      << : *vpc_parameters
+      Subnets: vpc::PrivateSubnets
+      InstanceType: ${api_rds_instance_type}
+      AllocatedStorage: ${api_rds_allocated_storage}
+      AllowMajorVersionUpgrade: 'false'
+      AllowMinorVersionUpgrade: 'true'
+      DatabaseName: ${api_rds_db_name}
+      DBInstanceIdentifier: ${api_rds_db_instance_name}
+      DBFamily: ${api_rds_db_family}
+      EngineVersion: ${api_rds_engine_version}
+      EngineMajorVersion: ${api_rds_engine_major_version}
+      MasterUser: ${api_rds_master_user}
+      MasterUserPassword: ${api_rds_master_user_password}
+      StorageEncrypted: ${api_rds_storage_encrypted}
+      IOPS: ${api_rds_iops}
+      MultiAZ: ${api_rds_multi_az}
+  - name: redis
+    class_path: stacker.blueprints.redis.RedisCluster
+    parameters:
+      << : *vpc_parameters
+      Subnets: vpc::PrivateSubnets
+      CacheNodeType: ${redis_node_type}
+      CacheClusterId: ${redis_cluster_id}
+      AutomaticFailoverEnabled: ${redis_automatic_failover}
+  - name: empire
+    class_path: blueprints.empire.Empire
+    parameters:
+      << : *vpc_parameters
+      InstanceType: ${empire_instance_type}
+      SshKeyName: ${ssh_key_name}
+      TrustedNetwork: ${empire_trusted_network}
+      DatabaseSecurityGroup: empireRdsDb::SecurityGroup
+      DockerRegistry: ${docker_registry}
+      DockerRegistryUser: ${docker_registry_user}
+      DockerRegistryEmail: ${docker_registry_email}
+      DockerRegistryPassword: ${docker_registry_password}
+      EmpireDatabaseHost: empireRdsDb::DBAddress
+      EmpireDatabasePassword: ${empire_rds_master_user_password}
+      EmpireDatabaseUser: ${empire_rds_master_user}
+      EmpireTokenSecret: ${empire_controller_token_secret}
+      EmpireHekaTcpOutputAddress: ${empire_heka_tcp_output_address}
+      EmpireDataDogAPIKey: ${empire_data_dog_api_key}
+      EmpireDataDogTags: ${empire_data_dog_tags}
+      EmpireGithubClientId: ${empire_github_client_id}
+      EmpireGithubClientSecret: ${empire_github_client_secret}
+      EmpireGithubOrganization: ${empire_github_organization}
+      InternalZone: vpc::InternalZoneId
+      BaseDomain: ${base_domain}
+      DesiredInstances: ${empire_desired_instances}
+      MinInstances: ${empire_min_instances}
+      MaxInstances: ${empire_max_instances}
+      ELBCertName: ${empire_controller_cert_name}
+  - name: api
+    class_path: blueprints.api.API
+    parameters:
+      RDSSecurityGroup: apiRdsDbV2::SecurityGroup
+      RedisSecurityGroup: redis::SecurityGroup
+      MinionSecurityGroup: empire::SecurityGroup
+  - name: logBucket
+    class_path: blueprints.logs.Bucket
+    enabled: ${log_bucket_enabled}
+    parameters:
+      BucketName: ${log_bucket_name}
+  - name: mediaBucket
+    class_path: blueprints.media.Bucket
+    enabled: ${media_bucket_enabled}
+    locked: true
+    parameters:
+      BucketName: ${media_bucket_name}
+      CorsAllowedOrigins: ${media_bucket_cors_allowed_origins}
+      CorsAllowedMethods: ${media_bucket_cors_allowed_methods}
+      PublicPaths: ${media_bucket_paths}
+      LogBucketName: logBucket::S3Bucket
+  - name: privateBucket
+    class_path: blueprints.private.Bucket
+    enabled: ${private_bucket_enabled}
+    locked: true
+    parameters:
+      BucketName: ${private_bucket_name}
+      LogBucketName: logBucket::S3Bucket
+      ReadRoles: empire::EmpireControllerRole
+  - name: fileBucket
+    class_path: blueprints.media.Bucket
+    enabled: ${file_bucket_enabled}
+    locked: true
+    parameters:
+      BucketName: ${file_bucket_name}
+      CorsAllowedOrigins: ${file_bucket_cors_allowed_origins}
+      CorsAllowedMethods: ${file_bucket_cors_allowed_methods}
+      LogBucketName: logBucket::S3Bucket
+  - name: emailIngestion
+    class_path: blueprints.email.EmailIngestion
+    enabled: ${email_bucket_enabled}
+    locked: true
+    parameters:
+      BucketName: ${email_bucket_name}
+      LogBucketName: logBucket::S3Bucket
+      AWSAccountId: ${email_aws_account_id}
+  - name: servicesUser
+    class_path: blueprints.iam.ServicesUser
+    parameters:
+      BaseDomain: ${base_domain}
+      S3Buckets: ['${media_bucket_name}', '${file_bucket_name}', '${email_bucket_name}']
+      SNSApplicationARNs: ${sns_application_arns}
+  - name: accessRequest
+    class_path: blueprints.sns.Topic
+    parameters:
+      DisplayName: ${sns_topic_access_request_display_name}
+      Publisher: servicesUser::User
+  - name: noSearchResults
+    class_path: blueprints.sns.Topic
+    parameters:
+      DisplayName: ${sns_topic_no_search_results_display_name}
+      Publisher: servicesUser::User

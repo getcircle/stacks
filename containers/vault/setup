@@ -1,0 +1,7 @@
+#!/bin/bash
+VAULT_VERSION=0.2.0
+VAULT_FILE=vault_${VAULT_VERSION}_linux_amd64.zip
+VAULT_URL=https://dl.bintray.com/mitchellh/vault/${VAULT_FILE}
+
+curl -L ${VAULT_URL} -o `dirname $0`/vault.zip
+unzip -o `dirname $0`/vault.zip -d `dirname $0`

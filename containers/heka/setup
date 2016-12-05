@@ -1,0 +1,5 @@
+#!/bin/bash
+HEKA_VERSION=0.10.0b0
+HEKA_URL=https://github.com/mozilla-services/heka/releases/download/v${HEKA_VERSION}/heka_${HEKA_VERSION}_amd64.deb
+
+curl -L ${HEKA_URL} -o `dirname $0`/heka.deb
